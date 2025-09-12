@@ -31,7 +31,7 @@ class Cargo:
                  height: float,
                  quantity: int,
                  gross_weight: float,
-                 order_time: datetime,
+                 order_time: str,
                  package_type: str,
                  stackable: str,  # 'Y' or 'N'
                  load_dir: str,  # 'L', 'W', 'L&W'
@@ -47,7 +47,7 @@ class Cargo:
         self.height = float(height)
         self.quantity = int(quantity)
         self.gross_weight = float(gross_weight)
-        self.order_time = order_time
+        self.order_time = datetime.strptime(order_time, '%Y%m%d')
         self.package_type = package_type
         self.stackable = stackable
         self.load_dir = load_dir  # 装载长度
