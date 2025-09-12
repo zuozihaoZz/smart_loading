@@ -31,7 +31,7 @@ class Cargo:
                  height: float,
                  quantity: int,
                  gross_weight: float,
-                 order_time: str,
+                 order_time: datetime,
                  package_type: str,
                  stackable: str,  # 'Y' or 'N'
                  load_dir: str,  # 'L', 'W', 'L&W'
@@ -47,7 +47,7 @@ class Cargo:
         self.height = float(height)
         self.quantity = int(quantity)
         self.gross_weight = float(gross_weight)
-        self.order_time = datetime.strptime(order_time, '%Y%m%d')
+        self.order_time = order_time
         self.package_type = package_type
         self.stackable = stackable
         self.load_dir = load_dir  # 装载长度
@@ -816,7 +816,7 @@ def parse_df_to_cargos(df: pd.DataFrame) -> List[Cargo]:
         try:
             ot = row.get('order_time')
             if isinstance(ot, str):
-                order_time = datetime.fromisoformat(ot)
+                order_time = datetime.strptime(ot,'%Y%m%d')
             elif isinstance(ot, pd.Timestamp):
                 order_time = ot.to_pydatetime()
             elif ot is None or (isinstance(ot, float) and math.isnan(ot)):
@@ -877,7 +877,7 @@ def app():
             if uploaded.name.endswith('.csv'):
                 df_up = pd.read_csv(uploaded)
             else:
-                df_up = pd.read_excel(uploaded)
+                df_up = pd.read_excel(uploaded,dtype=str)
             df = df_up
         except Exception as e:
             st.error(f'读取文件出错: {e}')
