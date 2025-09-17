@@ -280,12 +280,12 @@ def validate_time_rules_for_container(cargos: List[Cargo], transport_mode_hint: 
 
         # ii. FUYAO/FOXSEMICON 特殊供应商规则
         suppliers = set(c.supplier for c in cargos)
-        if 'FUYAO' in suppliers and 'FOXSEMICON' in suppliers:
+        if 'FUYAO' in suppliers or 'FOXSEMICON' in suppliers:
             special_times = [c.order_time for c in cargos if c.supplier in ('FUYAO', 'FOXSEMICON')]
             if special_times:
                 min_sp = min(special_times)
                 for c in cargos:
-                    if c.supplier not in ('FUYAO', 'FOXSEMICON'):
+                    if c.supplier not in ():
                         if (c.order_time - min_sp).days > 1:
                             logging.warning("非特殊供应商订单时间晚于限制")
                             return False
@@ -1422,8 +1422,7 @@ def app():
                             st.write(f"组 {group_idx + 1}: {len(group)} 个货物")
                             for cargo in group:
                                 st.write(
-                                    f"- ID:{cargo.uid}, 订单: {cargo.customer_order}, "
-                                    f"尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
+                                    f"订单: {cargo.customer_order},供应商{cargo.supplier},预计发货时间{cargo.order_time}")
 
                     if res.get('placements'):
                         fig = visualize_container_placements(res, cont)
