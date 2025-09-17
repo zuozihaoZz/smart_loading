@@ -1263,8 +1263,10 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
 
 
 def default_demo_df():
-    df = pd.read_excel(r'C:\Users\HMG-BA110\Desktop\forecastorderdetail_1757643601667.xlsx', dtype=str,
-                       sheet_name='Sheet1')
+    # df = pd.read_excel(r'C:\Users\HMG-BA110\Desktop\forecastorderdetail_1757643601667.xlsx', dtype=str,
+    #                    sheet_name='Sheet1')
+    df = pd.DataFrame()
+
     return df
 
 
@@ -1375,7 +1377,8 @@ def app():
                         st.write(f"未放置组 {i + 1}:")
                         for cargo in group:
                             st.write(
-                                f"- ID:{cargo.uid}, 订单: {cargo.customer_order}, 尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
+                                f"- ID:{cargo.uid}, 订单: {cargo.customer_order}, "
+                                f"尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
 
                 for idx, inst in enumerate(sol['instances']):
                     cont = inst['container']
@@ -1419,7 +1422,8 @@ def app():
                             st.write(f"组 {group_idx + 1}: {len(group)} 个货物")
                             for cargo in group:
                                 st.write(
-                                    f"- ID:{cargo.uid}, 订单: {cargo.customer_order}, 尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
+                                    f"- ID:{cargo.uid}, 订单: {cargo.customer_order}, "
+                                    f"尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
 
                     if res.get('placements'):
                         fig = visualize_container_placements(res, cont)
