@@ -1624,7 +1624,6 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
                       '<extra></extra>'
     )
 
-
     return fig
 
 
