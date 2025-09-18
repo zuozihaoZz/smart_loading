@@ -1675,9 +1675,9 @@ def create_cuboid_plot(x, y, z, length, width, height, name, color):
 
 
 def default_demo_df():
-    df = pd.read_excel(r'C:\Users\HMG-BA110\Desktop\forecastorderdetail_1757643601667.xlsx', dtype=str,
-                       sheet_name='Sheet1')
-    # df = pd.DataFrame()
+    # df = pd.read_excel(r'C:\Users\HMG-BA110\Desktop\forecastorderdetail_1757643601667.xlsx', dtype=str,
+    #                    sheet_name='Sheet1')
+    df = pd.DataFrame()
 
     return df
 
