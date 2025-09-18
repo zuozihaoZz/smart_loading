@@ -1218,24 +1218,13 @@ def plan_multi_containers(cargos: List[Cargo], container_types: List[Container])
 # -----------------------
 # 可视化 (Plotly) 与 UI
 # -----------------------
-def create_cuboid_plot(x, y, z, dx, dy, dz, name, color):
-    X = [x, x + dx, x + dx, x, x, x + dx, x + dx, x]
-    Y = [y, y, y + dy, y + dy, y, y, y + dy, y + dy]
-    Z = [z, z, z, z, z + dz, z + dz, z + dz, z + dz]
-    I = [0, 0, 0, 1, 1, 2, 4, 5, 6, 4, 6, 7]
-    J = [1, 2, 4, 2, 5, 3, 5, 6, 7, 0, 7, 3]
-    K = [2, 4, 5, 3, 6, 0, 6, 7, 4, 7, 3, 0]
-    return go.Mesh3d(x=X, y=Y, z=Z, i=I, j=J, k=K, opacity=0.8, color=color, name=name, hovertext=name,
-                     hoverinfo='text')
-
-
 def visualize_container_placements(res: Dict[str, Any], container: Container, groups: List[List[Cargo]] = None):
     """
-    改进的可视化函数，更好的错误处理
+    优化的可视化函数 - 深色背景下的清晰3D展示
     """
     placements = res.get('placements', [])
 
-    # 数据验证（如果提供了groups参数）
+    # 数据验证（保持原有逻辑）
     if groups is not None:
         placed_ids = {p[4].uid for p in placements}
         expected_ids = set()
@@ -1247,57 +1236,448 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
             missing = expected_ids - placed_ids
             extra = placed_ids - expected_ids
             logging.info(f"可视化警告: 数据不一致! 期望{len(expected_ids)}个，实际{len(placed_ids)}个")
-            if missing:
-                logging.info(f"缺失货物: {missing}")
-            if extra:
-                logging.info(f"多余货物: {extra}")
 
     fig = go.Figure()
-    # 添加容器轮廓
-    fig.add_trace(
-        create_cuboid_plot(0, 0, 0, container.length, container.width, container.height,
-                           'Container', 'rgba(0,0,0,0.1)'))
 
-    # 根据包装类型和供应商分配颜色
-    type_colors = {'Crate': (200, 50, 50), 'Pallet': (50, 200, 50), 'Box': (50, 50, 200)}
+    # 深色背景配色方案
+    dark_bg_color = 'rgba(30, 30, 40, 1)'  # 深蓝黑色背景
+    axis_grid_color = 'rgba(80, 100, 120, 0.3)'  # 坐标轴网格颜色
+    grid_color = 'rgba(139, 134, 130, 0.6)'  # 明显的蓝色网格
+    floor_color = 'rgba(60, 80, 100, 0.6)'  # 地板
 
-    for idx, (x, y, z, (l, w, h), c, mode) in enumerate(placements):
-        base_rgb = type_colors.get(c.package_type, (150, 150, 150))
-        offset = (hash(c.supplier) % 50) - 25
-        r = min(max(base_rgb[0] + offset, 0), 255)
-        g = min(max(base_rgb[1] + offset, 0), 255)
-        b = min(max(base_rgb[2] + offset, 0), 255)
+    # 1. 设置整体背景
+    fig.update_layout(
+        paper_bgcolor=dark_bg_color,
+        plot_bgcolor=dark_bg_color,
+        scene=dict(
+            xaxis=dict(backgroundcolor=dark_bg_color),
+            yaxis=dict(backgroundcolor=dark_bg_color),
+            zaxis=dict(backgroundcolor=dark_bg_color)
+        )
+    )
+
+    # 2. 优化容器地板
+    fig.add_trace(go.Mesh3d(
+        x=[0, container.length, container.length, 0],
+        y=[0, 0, container.width, container.width],
+        z=[0, 0, 0, 0],
+        color=floor_color,
+        opacity=0.9,
+        name='Container Floor',
+        showlegend=False
+    ))
+
+    # 添加地板网格线 - 使用明显的颜色
+    for i in range(0, int(container.length) + 1, 1):
+        fig.add_trace(go.Scatter3d(
+            x=[i, i], y=[0, container.width], z=[0, 0],
+            mode='lines', line=dict(color=grid_color, width=1.5),
+            showlegend=False
+        ))
+    for i in range(0, int(container.width) + 1, 1):
+        fig.add_trace(go.Scatter3d(
+            x=[0, container.length], y=[i, i], z=[0, 0],
+            mode='lines', line=dict(color=grid_color, width=1.5),
+            showlegend=False
+        ))
+
+    wall_opacity = 0.9  # 增加不透明度
+    wall_color = 'rgba(100, 130, 160, 0.8)'  # 更亮的蓝色墙壁
+    wall_border_color = 'rgba(180, 210, 240, 0.9)'  # 明亮的边框
+    # 后墙 (Y=container.width)
+    fig.add_trace(go.Mesh3d(
+        x=[0, container.length, container.length, 0],
+        y=[container.width, container.width, container.width, container.width],
+        z=[0, 0, container.height, container.height],
+        color=wall_color,
+        opacity=wall_opacity,
+        name='Back Wall',
+        showlegend=False
+    ))
+    # 后墙边框 - 使用明亮的线条
+    fig.add_trace(go.Scatter3d(
+        x=[0, container.length, container.length, 0, 0],
+        y=[container.width, container.width, container.width, container.width, container.width],
+        z=[0, 0, container.height, container.height, 0],
+        mode='lines',
+        line=dict(color=wall_border_color, width=3),  # 加粗边框
+        name='Back Wall Border',
+        showlegend=False
+    ))
+
+    # 右侧墙 (X=container.length)
+    fig.add_trace(go.Mesh3d(
+        x=[container.length, container.length, container.length, container.length],
+        y=[0, container.width, container.width, 0],
+        z=[0, 0, container.height, container.height],
+        color=wall_color,
+        opacity=wall_opacity,
+        name='Right Wall',
+        showlegend=False
+    ))
+    # 右侧墙边框
+    fig.add_trace(go.Scatter3d(
+        x=[container.length, container.length, container.length, container.length, container.length],
+        y=[0, container.width, container.width, 0, 0],
+        z=[0, 0, container.height, container.height, 0],
+        mode='lines',
+        line=dict(color=wall_border_color, width=3),
+        name='Right Wall Border',
+        showlegend=False
+    ))
+
+    # 左侧墙 (X=0)
+    fig.add_trace(go.Mesh3d(
+        x=[0, 0, 0, 0],
+        y=[0, container.width, container.width, 0],
+        z=[0, 0, container.height, container.height],
+        color=wall_color,
+        opacity=wall_opacity,
+        name='Left Wall',
+        showlegend=False
+    ))
+    # 左侧墙边框
+    fig.add_trace(go.Scatter3d(
+        x=[0, 0, 0, 0, 0],
+        y=[0, container.width, container.width, 0, 0],
+        z=[0, 0, container.height, container.height, 0],
+        mode='lines',
+        line=dict(color=wall_border_color, width=3),
+        name='Left Wall Border',
+        showlegend=False
+    ))
+    # 添加顶部边框，让容器更完整
+    fig.add_trace(go.Scatter3d(
+        x=[0, container.length, container.length, 0, 0],
+        y=[0, 0, container.width, container.width, 0],
+        z=[container.height, container.height, container.height, container.height, container.height],
+        mode='lines',
+        line=dict(color=wall_border_color, width=2),
+        name='Top Border',
+        showlegend=False
+    ))
+
+    # 4. 优化门的位置标记 - 使用明亮的颜色
+    door_width = min(container.width * 0.9, 2.4)  # 门的宽度（Y方向）
+    door_height = min(container.height * 0.9, 2.8)  # 门的高度（Z方向）
+
+    # 计算门的位置 - 在X=container.length的面，居中放置
+    door_y_start = (container.width - door_width) / 2  # 门在Y方向的起始位置
+    door_y_end = door_y_start + door_width  # 门在Y方向的结束位置
+    door_z_end = door_height  # 门的高度
+
+    # 门的面（X=container.length，宽高面）
+    fig.add_trace(go.Mesh3d(
+        x=[container.length, container.length, container.length, container.length],  # X=container.length
+        y=[door_y_start, door_y_end, door_y_end, door_y_start],  # Y方向从door_y_start到door_y_end
+        z=[0, 0, door_z_end, door_z_end],  # Z方向从地面到门高
+        color='rgba(255, 220, 80, 0.9)',
+        name='Door',
+        showlegend=False
+    ))
+
+    # 门框 - 在X=container.length的面上的门框
+    fig.add_trace(go.Scatter3d(
+        x=[container.length, container.length, container.length, container.length, container.length],
+        y=[door_y_start, door_y_end, door_y_end, door_y_start, door_y_start],
+        z=[0, 0, door_z_end, door_z_end, 0],
+        mode='lines',
+        line=dict(color='rgba(255, 240, 150, 0.9)', width=3),
+        name='Door Frame',
+        showlegend=False
+    ))
+
+    # 添加顶部边框
+    fig.add_trace(go.Scatter3d(
+        x=[0, container.length, container.length, 0, 0],
+        y=[0, 0, container.width, container.width, 0],
+        z=[container.height, container.height, container.height, container.height, container.height],
+        mode='lines',
+        line=dict(color=wall_border_color, width=2),
+        showlegend=False
+    ))
+
+    # 5. 优化货物颜色方案 - 使用鲜艳的颜色在深色背景下突出
+    type_colors = {
+        'Crate': (255, 140, 100),  # 温暖的橙色
+        'Pallet': (100, 200, 140),  # 清新的绿色
+        'Box': (100, 160, 255)  # 明亮的蓝色
+    }
+
+    # 预计算所有货物以优化性能
+    cargo_traces = []
+    arrow_traces = []
+    cone_traces = []
+    label_traces = []
+
+    for idx, (x, y, z, (l, w, h), cargo, mode) in enumerate(placements):
+        # 颜色处理 - 使用鲜艳的颜色
+        base_rgb = type_colors.get(cargo.package_type, (200, 200, 200))
+        supplier_hash = hash(cargo.supplier) % 20
+        r = min(max(base_rgb[0] + supplier_hash - 10, 50), 255)
+        g = min(max(base_rgb[1] + supplier_hash - 10, 50), 255)
+        b = min(max(base_rgb[2] + supplier_hash - 10, 50), 255)
         color = f'rgb({r},{g},{b})'
+        border_color = 'rgba(0, 0, 0, 1)'  # 黑色边框
 
-        name = f"ID:{c.uid} Supp:{c.supplier} Pkg:{c.package_type} Size:{l}x{w}x{h}"
+        # 尺寸和方向处理
         if mode == 'L':
             actual_l, actual_w, actual_h = l, w, h
+            fork_direction = 'W'
         elif mode == 'W':
             actual_l, actual_w, actual_h = w, l, h
+            fork_direction = 'L'
         else:
             actual_l, actual_w, actual_h = l, w, h
+            fork_direction = 'W'
 
-        fig.add_trace(create_cuboid_plot(x, y, z, actual_l, actual_w, actual_h, name, color))
-        # fig.add_trace(create_cuboid_plot(x, y, z, l, w, h, name, color))
+        # 货物立方体 - 使用正确的Mesh3d配置
+        # 实心立方体的8个顶点
+        vertices_x = [x, x + actual_l, x + actual_l, x, x, x + actual_l, x + actual_l, x]
+        vertices_y = [y, y, y + actual_w, y + actual_w, y, y, y + actual_w, y + actual_w]
+        vertices_z = [z, z, z, z, z + actual_h, z + actual_h, z + actual_h, z + actual_h]
 
+        # 修复：使用正确的面索引
+        # 每个面由2个三角形组成，共12个三角形
+        i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
+        j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 1]
+        k = [0, 7, 2, 3, 6, 7, 1, 5, 5, 5, 7, 6]
+
+        # 创建实心货物 - 修复颜色配置
+        cargo_trace = go.Mesh3d(
+            x=vertices_x,
+            y=vertices_y,
+            z=vertices_z,
+            i=i,
+            j=j,
+            k=k,
+            facecolor=[color] * 12,  # 每个面使用相同的颜色
+            opacity=1.0,  # 完全不透明
+            flatshading=True,  # 平面着色
+            name=f"ID:{cargo.uid}",
+            showlegend=False,
+            # 直接启用hover，不需要额外的透明层
+            hovertemplate='<b>ID:%{customdata[0]}</b><br>'
+                          '位置: (X:%{x:.1f}, Y:%{y:.1f}, Z:%{z:.1f})<br>'
+                          '尺寸: %{customdata[1]} × %{customdata[2]} × %{customdata[3]}<br>'
+                          '类型: %{customdata[4]}<br>'
+                          '供应商: %极customdata[5]}<br>'
+                          '<extra></extra>',
+            customdata=[[
+                cargo.uid,
+                f"{actual_l:.1f}",
+                f"{actual_w:.1f}",
+                f"{actual_h:.1f}",
+                cargo.package_type,
+                cargo.supplier
+            ]] * 8
+        )
+        cargo_traces.append(cargo_trace)
+        edges = [
+            # 底部边框
+            ([x, x + actual_l], [y, y], [z, z]),
+            ([x + actual_l, x + actual_l], [y, y + actual_w], [z, z]),
+            ([x + actual_l, x], [y + actual_w, y + actual_w], [z, z]),
+            ([x, x], [y + actual_w, y], [z, z]),
+            # 顶部边框
+            ([x, x + actual_l], [y, y], [z + actual_h, z + actual_h]),
+            ([x + actual_l, x + actual_l], [y, y + actual_w], [z + actual_h, z + actual_h]),
+            ([x + actual_l, x], [y + actual_w, y + actual_w], [z + actual_h, z + actual_h]),
+            ([x, x], [y + actual_w, y], [z + actual_h, z + actual_h]),
+            # 垂直边框
+            ([x, x], [y, y], [z, z + actual_h]),
+            ([x + actual_l, x + actual_l], [y, y], [z, z + actual_h]),
+            ([x + actual_l, x + actual_l], [y + actual_w, y + actual_w], [z, z + actual_h]),
+            ([x, x], [y + actual_w, y + actual_w], [z, z + actual_h])
+        ]
+
+        for edge_x, edge_y, edge_z in edges:
+            border_trace = go.Scatter3d(
+                x=edge_x,
+                y=edge_y,
+                z=edge_z,
+                mode='lines',
+                line=dict(color=border_color, width=3),  # 加粗边框
+                showlegend=False,
+                hoverinfo='skip'
+            )
+            cargo_traces.append(border_trace)
+
+        # 进叉方向指示器
+        center_x = x + actual_l / 2
+        center_y = y + actual_w / 2
+
+        if fork_direction == 'W':
+            arrow_x = [center_x, center_x]
+            arrow_y = [center_y, center_y + min(actual_w * 0.3, 0.4)]
+        else:
+            arrow_x = [center_x, center_x + min(actual_l * 0.3, 0.4)]
+            arrow_y = [center_y, center_y]
+
+        arrow_z = [z + 0.05, z + 0.05]
+
+        arrow_traces.append(go.Scatter3d(
+            x=arrow_x, y=arrow_y, z=arrow_z,
+            mode='lines',
+            line=dict(color='rgba(255, 255, 0, 0.9)', width=4),  # 黄色更醒目
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+
+        # 箭头头部 - 加大尺寸
+        cone_traces.append(go.Cone(
+            x=[arrow_x[1]], y=[arrow_y[1]], z=[arrow_z[1]],
+            u=[arrow_x[1] - arrow_x[0]], v=[arrow_y[1] - arrow_y[0]], w=[0],
+            colorscale=[[0, 'rgba(255, 255, 0, 0.9)'], [1, 'rgba(255, 255, 0, 0.9)']],
+            showscale=False,
+            sizemode='absolute',
+            sizeref=0.2,  # 加大箭头头部
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+
+        # 货物标签 - 使用白色文字在深色背景下清晰
+        label_traces.append(go.Scatter3d(
+            x=[center_x], y=[center_y], z=[z + actual_h + 0.1],
+            mode='text', text=[f"{cargo.uid}"],
+            textfont=dict(size=11, color='rgba(255,255,255,0.95)'),
+            showlegend=False, hoverinfo='skip'
+        ))
+
+    # 批量添加所有货物相关的trace
+    for trace in cargo_traces + arrow_traces + cone_traces + label_traces:
+        fig.add_trace(trace)
+
+    # 6. 优化布局设置 - 深色主题
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='Length'),
-            yaxis=dict(title='Width'),
-            zaxis=dict(title='Height'),
-            aspectmode='data'
+            xaxis=dict(
+                title='Length',
+                range=[-0, container.length],
+                backgroundcolor=dark_bg_color,
+                gridcolor=axis_grid_color,
+                gridwidth=1,
+                titlefont=dict(color='white'),
+                tickfont=dict(color='white'),
+                showgrid=True,
+                zeroline=False
+            ),
+            yaxis=dict(
+                title='Width',
+                range=[-0, container.width],
+                backgroundcolor=dark_bg_color,
+                gridcolor=axis_grid_color,
+                gridwidth=1,
+                titlefont=dict(color='white'),
+                tickfont=dict(color='white'),
+                showgrid=True,
+                zeroline=False
+            ),
+            zaxis=dict(
+                title='Height',
+                range=[-0, container.height],
+                backgroundcolor=dark_bg_color,
+                gridcolor=axis_grid_color,
+                gridwidth=1,
+                titlefont=dict(color='white'),
+                tickfont=dict(color='white'),
+                showgrid=True,
+                zeroline=False
+            ),
+            aspectmode='data',
+            camera=dict(
+                eye=dict(x=1.5, y=-1.5, z=0.8),
+                up=dict(x=0, y=0, z=1),
+                center=dict(x=0, y=0, z=0)
+
+            )
+
         ),
-        title=f"容器装载可视化 (共{len(placements)}个货物)",
-        margin=dict(r=0, l=0, b=0, t=40)
+        title=dict(
+            text=f"📦 装载可视化 - {container.name}<br>"
+                 f"货物数量: {len(placements)} | 空间利用率: {res.get('utilization', 0) * 100:.1f}%",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=16, color='white')
+        ),
+        margin=dict(r=20, l=20, b=20, t=80),
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor='rgba(40,40,50,0.9)',
+            bordercolor='rgba(100,100,120,0.5)',
+            borderwidth=1,
+            font=dict(color='white')
+        )
     )
+
+    # 添加交互提示
+    fig.update_traces(
+        selector=dict(type='mesh3d'),  # 只对mesh3d类型的trace应用
+        hovertemplate='<b>%{customdata[0]}</b><br>'
+                      '位置: (X:%{x:.1f}, Y:%{y:.1f}, Z:%{z:.1f})<br>'
+                      '尺寸: %{customdata[1]} × %{customdata[2]} × %{customdata[3]}<br>'
+                      '类型: %{customdata[4]}<br>'
+                      '供应商: %{customdata[5]}<br>'
+                      '<extra></extra>'
+    )
+
 
     return fig
 
 
+def create_cuboid_plot(x, y, z, length, width, height, name, color):
+    """创建优化的立方体绘图"""
+    # 立方体的8个顶点
+    vertices = [
+        [x, y, z],
+        [x + length, y, z],
+        [x + length, y + width, z],
+        [x, y + width, z],
+        [x, y, z + height],
+        [x + length, y, z + height],
+        [x + length, y + width, z + height],
+        [x, y + width, z + height]
+    ]
+
+    # 立方体的6个面
+    faces = [
+        [0, 1, 2, 3],  # 底面
+        [4, 5, 6, 7],  # 顶面
+        [0, 1, 5, 4],  # 前面
+        [2, 3, 7, 6],  # 后面
+        [0, 3, 7, 4],  # 左面
+        [1, 2, 6, 5]  # 右面
+    ]
+
+    # 提取坐标
+    x_coords = [v[0] for v in vertices]
+    y_coords = [v[1] for v in vertices]
+    z_coords = [v[2] for v in vertices]
+
+    # 创建mesh trace
+    return go.Mesh3d(
+        x=x_coords,
+        y=y_coords,
+        z=z_coords,
+        i=[face[0] for face in faces],
+        j=[face[1] for face in faces],
+        k=[face[2] for face in faces],
+        facecolor=[color] * 6,
+        opacity=0.8,
+        name=name,
+        showlegend=True,
+        hoverinfo='skip',
+        customdata=[[name, length, width, height]]
+    )
+
+
 def default_demo_df():
-    # df = pd.read_excel(r'C:\Users\HMG-BA110\Desktop\forecastorderdetail_1757643601667.xlsx', dtype=str,
-    #                    sheet_name='Sheet1')
-    df = pd.DataFrame()
+    df = pd.read_excel(r'C:\Users\HMG-BA110\Desktop\forecastorderdetail_1757643601667.xlsx', dtype=str,
+                       sheet_name='Sheet1')
+    # df = pd.DataFrame()
 
     return df
 
