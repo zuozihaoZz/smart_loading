@@ -615,13 +615,29 @@ def extract_extreme_points(placements: List, container: 'Container'):
 
         # 生成边界点
         boundary_points = [
+            # 基础边界点
             (x + dx, y, z),  # X方向末端
             (x, y + dy, z),  # Y方向末端
             (x, y, z + dz),  # Z方向末端
             (x + dx, y + dy, z),  # XY平面角
             (x + dx, y, z + dz),  # XZ平面角
             (x, y + dy, z + dz),  # YZ平面角
-            (x + dx, y + dy, z + dz)  # 对角点
+            (x + dx, y + dy, z + dz),  # 对角点
+
+            # 贴着容器边缘的点
+            (x + dx, 0, z),  # X方向末端，贴着左边缘
+            (x + dx, container.width, z),  # X方向末端，贴着右边缘
+            (0, y + dy, z),  # Y方向末端，贴着重边缘
+            (container.length, y + dy, z),  # Y方向末端，贴着后边缘
+            (x + dx, 0, z + dz),  # XZ平面角，贴着左边缘
+            (x + dx, container.width, z + dz),  # XZ平面角，贴着右边缘
+            (0, y + dy, z + dz),  # YZ平面角，贴着重边缘
+            (container.length, y + dy, z + dz),  # YZ平面角，贴着后边缘
+
+            # 贴着底部的点
+            (x + dx, y, 0),  # X方向末端，贴着底部
+            (x, y + dy, 0),  # Y方向末端，贴着底部
+            (x + dx, y + dy, 0),  # XY平面角，贴着底部
         ]
 
         # 添加有效边界点
@@ -687,13 +703,29 @@ def update_extreme_points(extreme_points: List[Tuple[float, float, float]],
 
     # 添加新边界点
     new_candidates = [
+        # 基础边界点
         (x0 + dx, y0, z0),  # X方向末端
         (x0, y0 + dy, z0),  # Y方向末端
         (x0, y0, z0 + dz),  # Z方向末端
         (x0 + dx, y0 + dy, z0),  # XY平面角
         (x0 + dx, y0, z0 + dz),  # XZ平面角
         (x0, y0 + dy, z0 + dz),  # YZ平面角
-        (x0 + dx, y0 + dy, z0 + dz)  # 对角点
+        (x0 + dx, y0 + dy, z0 + dz),  # 对角点
+
+        # 贴着容器边缘的点
+        (x0 + dx, 0, z0),  # X方向末端，贴着左边缘
+        (x0 + dx, container.width, z0),  # X方向末端，贴着右边缘
+        (0, y0 + dy, z0),  # Y方向末端，贴着重边缘
+        (container.length, y0 + dy, z0),  # Y方向末端，贴着后边缘
+        (x0 + dx, 0, z0 + dz),  # XZ平面角，贴着左边缘
+        (x0 + dx, container.width, z0 + dz),  # XZ平面角，贴着右边缘
+        (0, y0 + dy, z0 + dz),  # YZ平面角，贴着重边缘
+        (container.length, y0 + dy, z0 + dz),  # YZ平面角，贴着后边缘
+
+        # 贴着底部的点
+        (x0 + dx, y0, 0),  # X方向末端，贴着底部
+        (x0, y0 + dy, 0),  # Y方向末端，贴着底部
+        (x0 + dx, y0 + dy, 0),  # XY平面角，贴着底部
     ]
 
     logging.info(f"候选边界点: {new_candidates}")
