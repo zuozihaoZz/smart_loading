@@ -235,25 +235,25 @@ def sort_groups_for_packing(groups: List[List[Cargo]], transport_mode: str) -> L
         ))
 
     # 精确的组排序键函数
-    def exact_group_sort_key(group):
-        if not group:
-            return (4, '', 0, 0, 0, '')
+    def exact_group_sort_key(grp):
+        if not grp:
+            return 4, '', 0, 0, 0, ''
 
         # 使用组内所有货物的综合属性
-        min_pkg_rank = min(pkg_rank.get(c.package_type, 3) for c in group)
+        min_pkg_rank = min(pkg_rank.get(c.package_type, 3) for c in grp)
 
         # 获取主要的客户单号（出现次数最多的）
         order_counts = {}
-        for c in group:
+        for c in grp:
             order = c.customer_order or ''
             order_counts[order] = order_counts.get(order, 0) + 1
         primary_order = max(order_counts.items(), key=lambda x: x[1])[0] if order_counts else ''
 
-        max_height = max(c.height for c in group)
-        avg_length = sum(c.length for c in group) / len(group)
-        avg_width = sum(c.width for c in group) / len(group)
+        max_height = max(c.height for c in grp)
+        avg_length = sum(c.length for c in grp) / len(grp)
+        avg_width = sum(c.width for c in grp) / len(grp)
 
-        return (min_pkg_rank, primary_order, -max_height, avg_length, avg_width)
+        return min_pkg_rank, primary_order, -max_height, avg_length, avg_width
 
     # 处理运输模式
     if transport_mode == 'Ground':
