@@ -5,11 +5,13 @@ import logging
 import random
 import time
 from datetime import datetime, timedelta
-from typing import List, Tuple, Optional, Dict, Any
-
-import pandas as pd
+from typing import List, Tuple, Optional, Dict, Any, Union
 import plotly.graph_objects as go
+import pandas as pd
 import streamlit as st
+
+# 定义允许的trace类型
+TraceType = Union[go.Mesh3d, go.Scatter3d, go.Cone, go.Scatter3d]
 
 # -----------------------
 # 基本配置
@@ -17,7 +19,7 @@ import streamlit as st
 random.seed(123456)
 
 logging.basicConfig(
-    level=logging.DEBUG,  # 可根据需要调整为 INFO 或 WARNING
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
@@ -72,17 +74,12 @@ class Cargo:
         if self.load_dir == 'L':
             res.append((self.length, self.width, self.height, 'L'))
             if diag < container.width:  # 可以九十度旋转
-                res.append((self.width, self.length, self.height, 'L'))
+                res.append((self.width, self.length, self.height, 'W'))
 
         if self.load_dir == 'W':
             res.append((self.width, self.length, self.height, 'W'))
             if diag < container.width:  # 可以九十度旋转
-                res.append((self.length, self.width, self.height, 'W'))
-
-        # if self.load_dir in ('L', 'L&W'):
-        #     res.append((self.length, self.width, self.height, 'L'))
-        # if self.load_dir in ('W', 'L&W'):
-        #     res.append((self.width, self.length, self.height, 'W'))
+                res.append((self.length, self.width, self.height, 'L'))
 
         uniq = []
         seen = set()
@@ -225,16 +222,51 @@ def create_binding_groups(cargos: List[Cargo]) -> List[List[Cargo]]:
 
 def sort_groups_for_packing(groups: List[List[Cargo]], transport_mode: str) -> List[List[Cargo]]:
     pkg_rank = {'Crate': 0, 'Pallet': 1, 'Box': 2}
-    for g in groups:
-        g.sort(key=lambda c: (pkg_rank.get(c.package_type, 3), c.customer_order or '', -c.height, c.uid))
-    # Ground 优先 Rockwell
+
+    # 首先对每个组内进行精确排序
+    for group in groups:
+        group.sort(key=lambda c: (
+            pkg_rank.get(c.package_type, 3),  # 1. 包装类型优先级
+            c.customer_order or '',           # 2. 客户单号
+            -c.height,                        # 3. 高度降序
+            c.length,                         # 4. 长度（次要）
+            c.width,                          # 5. 宽度（次要）
+            c.uid                             # 6. UID 确保稳定性
+        ))
+
+    # 精确的组排序键函数
+    def exact_group_sort_key(group):
+        if not group:
+            return (4, '', 0, 0, 0, '')
+
+        # 使用组内所有货物的综合属性
+        min_pkg_rank = min(pkg_rank.get(c.package_type, 3) for c in group)
+
+        # 获取主要的客户单号（出现次数最多的）
+        order_counts = {}
+        for c in group:
+            order = c.customer_order or ''
+            order_counts[order] = order_counts.get(order, 0) + 1
+        primary_order = max(order_counts.items(), key=lambda x: x[1])[0] if order_counts else ''
+
+        max_height = max(c.height for c in group)
+        avg_length = sum(c.length for c in group) / len(group)
+        avg_width = sum(c.width for c in group) / len(group)
+
+        return (min_pkg_rank, primary_order, -max_height, avg_length, avg_width)
+
+    # 处理运输模式
     if transport_mode == 'Ground':
-        rock = [g for g in groups if any(c.supplier == 'Rockwell' for c in g)]
-        others = [g for g in groups if not any(c.supplier == 'Rockwell' for c in g)]
-        groups = rock + others
+        rockwell_groups = [g for g in groups if any(c.supplier == 'Rockwell' for c in g)]
+        other_groups = [g for g in groups if not any(c.supplier == 'Rockwell' for c in g)]
+
+        rockwell_groups.sort(key=exact_group_sort_key)
+        other_groups.sort(key=exact_group_sort_key)
+
+        return rockwell_groups + other_groups
     else:
-        groups.sort(key=lambda x: (pkg_rank.get(x[0].package_type, 3), x[0].customer_order or '', -x[0].height))
-    return groups
+        groups.sort(key=exact_group_sort_key)
+        return groups
 
 
 # -----------------------
@@ -320,8 +352,7 @@ def validate_time_rules_for_container(cargos: List[Cargo], transport_mode_hint: 
 
 
 # -----------------------
-# 几何函数、极点方法 (EPP)
-# placed 项统一为 (x,y,z,(l,w,h), cargo, mode)
+# 几何函数、极点方法 (EP)
 # -----------------------
 def check_stack_rules_on_stack(stack: List[Cargo]) -> bool:
     """
@@ -412,13 +443,7 @@ def can_place_with_constraints(dims, pos, placed, container: Container, cargo: C
 
     logging.info(f"检查放置: 位置({x}, {y}, {z}), 尺寸({l}, {w}, {h}), 模式({mode})")
 
-    # 根据模式确定实际占用空间（使用不同的变量名）
-    if mode == 'L':
-        actual_l, actual_w, actual_h = l, w, h
-    elif mode == 'W':
-        actual_l, actual_w, actual_h = w, l, h
-    else:
-        actual_l, actual_w, actual_h = l, w, h
+    actual_l, actual_w, actual_h = l, w, h
 
     # 1. 边界检查（使用实际尺寸）
     # 添加负值检查，增大容差
@@ -431,14 +456,8 @@ def can_place_with_constraints(dims, pos, placed, container: Container, cargo: C
         return False
 
     # 2. 碰撞检测 + 不可叠货物检查
-    for placed_x, placed_y, placed_z, (placed_l, placed_w, placed_h), placed_cargo, placed_mode in placed:
-        # 根据放置模式确定已放置货物的实际尺寸
-        if placed_mode == 'L':
-            placed_actual_l, placed_actual_w, placed_actual_h = placed_l, placed_w, placed_h
-        elif placed_mode == 'W':
-            placed_actual_l, placed_actual_w, placed_actual_h = placed_w, placed_l, placed_h
-        else:
-            placed_actual_l, placed_actual_w, placed_actual_h = placed_l, placed_w, placed_h
+    for placed_x, placed_y, placed_z, (
+            placed_actual_l, placed_actual_w, placed_actual_h), placed_cargo, placed_mode in placed:
 
         # 碰撞检测
         overlap_x = min(x + actual_l, placed_x + placed_actual_l) - max(x, placed_x)
@@ -455,23 +474,19 @@ def can_place_with_constraints(dims, pos, placed, container: Container, cargo: C
         cargo_area = actual_l * actual_w  # 使用实际底面积
         support_area = 0.0
         supported = False
+        support_cargos = []  # 记录所有支撑货物
 
-        for placed_x, placed_y, placed_z, (placed_l, placed_w, placed_h), placed_cargo, placed_mode in placed:
-            # 根据放置模式确定已放置货物的实际尺寸
-            if placed_mode == 'L':
-                placed_actual_l, placed_actual_w, placed_actual_h = placed_l, placed_w, placed_h
-            elif placed_mode == 'W':
-                placed_actual_l, placed_actual_w, placed_actual_h = placed_w, placed_l, placed_h
-            else:
-                placed_actual_l, placed_actual_w, placed_actual_h = placed_l, placed_w, placed_h
+        for placed_x, placed_y, placed_z, placed_dims, placed_cargo, placed_mode in placed:
+            placed_l, placed_w, placed_h = placed_dims
 
             # 检查支撑
-            if abs(placed_z + placed_actual_h - z) < 1e-6:
-                ox = max(0.0, min(x + actual_l, placed_x + placed_actual_l) - max(x, placed_x))
-                oy = max(0.0, min(y + actual_w, placed_y + placed_actual_w) - max(y, placed_y))
+            if abs(placed_z + placed_h - z) < 1e-6:
+                ox = max(0.0, min(x + actual_l, placed_x + placed_l) - max(x, placed_x))
+                oy = max(0.0, min(y + actual_w, placed_y + placed_w) - max(y, placed_y))
                 support_area += ox * oy
                 if ox * oy > 0:
                     supported = True
+                    support_cargos.append(placed_cargo)
 
         # 必须有足够的支撑面积
         if cargo_area > 0 and support_area < 0.80 * cargo_area - 1e-9:
@@ -495,8 +510,8 @@ def fork_face_of_mode(mode: str) -> List[str]:
     """
     根据放置 mode 返回该放置的'进叉面'集合
     规则（你给定）：
-      - 放置 mode 'L' -> 载载长度为 L，进叉面为 W
-      - 放置 mode 'W' -> 载载长度为 W，进叉面为 L
+      - 放置 mode 'L' -> 装载长度为 L，进叉面为 W（宽边进叉）
+      - 放置 mode 'W' -> 装载长度为 W，进叉面为 L（长边进叉）
       - 放置 mode 'L&W' -> 进叉面可以是 L 或 W
     返回值为 ['L'] 或 ['W'] 或 ['L','W']
     """
@@ -530,7 +545,6 @@ def every_row_has_entry_face(placements) -> bool:
     检查每行是否至少有一个货物的实际进叉面朝门
     门在 x=0，叉车沿 x 方向叉入
     """
-
     if not placements:
         return True
 
@@ -543,12 +557,18 @@ def every_row_has_entry_face(placements) -> bool:
 
             # 判断实际进叉面是否朝门
             for f in faces:
-                if f == 'L' and l <= w:  # 货物长度沿 x 方向时进叉面为 L
-                    has_entry_face = True
-                    break
-                elif f == 'W' and w <= l:  # 货物宽度沿 x 方向时进叉面为 W
-                    has_entry_face = True
-                    break
+                if f == 'L':
+                    # 进叉面为L：长边进叉，意味着货物的长边应该平行于门（YZ平面）
+                    # 即货物的长边应该沿Y方向，宽边沿X方向
+                    if abs(w - (x + l - x)) < 1e-6:  # 简化判断：只要货物在行内就有进叉面
+                        has_entry_face = True
+                        break
+                elif f == 'W':
+                    # 进叉面为W：宽边进叉，意味着货物的宽边应该平行于门（YZ平面）
+                    # 即货物的宽边应该沿Y方向，长边沿X方向
+                    if abs(l - (x + l - x)) < 1e-6:  # 简化判断
+                        has_entry_face = True
+                        break
             if has_entry_face:
                 break
 
@@ -601,19 +621,8 @@ def extract_extreme_points(placements: List, container: 'Container'):
     logging.info(f"处理 {len(placements)} 个已有放置")
 
     for placement in placements:
-        x, y, z, (l, w, h), cargo, mode = placement
+        x, y, z, (dx, dy, dz), cargo, mode = placement
 
-        # 根据模式确定实际尺寸方向
-        if mode == 'L':  # 长度对应X轴，宽度对应Y轴
-            dx, dy, dz = l, w, h
-        elif mode == 'W':  # 宽度对应X轴，长度对应Y轴
-            dx, dy, dz = w, l, h
-        elif mode == 'L&W':  # 默认使用L模式
-            dx, dy, dz = l, w, h
-        else:  # 未知模式，使用默认
-            dx, dy, dz = l, w, h
-
-        # 生成边界点
         boundary_points = [
             # 基础边界点
             (x + dx, y, z),  # X方向末端
@@ -685,21 +694,9 @@ def update_extreme_points(extreme_points: List[Tuple[float, float, float]],
         logging.info(f"⚠ 极点 {used_point} 不在列表中")
 
     x0, y0, z0 = used_point
-    l, w, h = dims
+    dx, dy, dz = dims  # 直接使用实际尺寸，不需要模式转换
 
-    # 根据模式确定实际尺寸方向
-    if mode == 'L':
-        dx, dy, dz = l, w, h
-        logging.info(f"模式L: 尺寸({dx}, {dy}, {dz})")
-    elif mode == 'W':
-        dx, dy, dz = w, l, h
-        logging.info(f"模式W: 尺寸({dx}, {dy}, {dz})")
-    elif mode == 'L&W':
-        dx, dy, dz = l, w, h
-        logging.info(f"模式L&W: 尺寸({dx}, {dy}, {dz})")
-    else:
-        dx, dy, dz = l, w, h
-        logging.info(f"未知模式: 尺寸({dx}, {dy}, {dz})")
+    logging.info(f"实际尺寸: ({dx}, {dy}, {dz})")
 
     # 添加新边界点
     new_candidates = [
@@ -747,21 +744,13 @@ def update_extreme_points(extreme_points: List[Tuple[float, float, float]],
         blocking_cargo = None
 
         for placement in placed:
-            placed_x, placed_y, placed_z, (placed_l, placed_w, placed_h), placed_cargo, placed_mode = placement
+            placed_x, placed_y, placed_z, (placed_dx, placed_dy, placed_dz), placed_cargo, placed_mode = placement
 
             # 跳过当前正在放置的货物（自己阻挡自己）
             if (abs(placed_x - x0) < 1e-9 and
                     abs(placed_y - y0) < 1e-9 and
                     abs(placed_z - z0) < 1e-9):
                 continue
-
-            # 根据模式确定实际尺寸
-            if placed_mode == 'L':
-                placed_dx, placed_dy, placed_dz = placed_l, placed_w, placed_h
-            elif placed_mode == 'W':
-                placed_dx, placed_dy, placed_dz = placed_w, placed_l, placed_h
-            else:
-                placed_dx, placed_dy, placed_dz = placed_l, placed_w, placed_h
 
             # 检查候选点是否在已有货物内部
             if (placed_x <= cand_x <= placed_x + placed_dx and
@@ -785,7 +774,7 @@ def update_extreme_points(extreme_points: List[Tuple[float, float, float]],
 
     # 确保极点列表不为空
     if not new_extreme:
-        logging.info("⚠ 警告: 极点列表为空，添加原点")
+        logging.info("警告: 极点列表为空，添加原点")
         new_extreme.append((0.0, 0.0, 0.0))
 
     # 重新排序（Z降序，X升序，Y升序）
@@ -800,7 +789,7 @@ def update_extreme_points(extreme_points: List[Tuple[float, float, float]],
 def pack_container_epp(groups: List[List['Cargo']], container: 'Container', allow_partial: bool = False,
                        existing_placements: List = None):
     """
-    EPP 算法 - 完整修复版
+    EPP 算法
     """
     logging.info(f"开始装载到容器 {container.name}, 已有放置: {len(existing_placements or [])}")
     placements = list(existing_placements) if existing_placements else []
@@ -828,7 +817,7 @@ def pack_container_epp(groups: List[List['Cargo']], container: 'Container', allo
 
         for cargo in group:
             logging.debug(
-                f"  货物 {cargo.uid}: {cargo.package_type}, 尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
+                f"货物 {cargo.uid}: {cargo.package_type}, 尺寸: {cargo.length}x{cargo.width}x{cargo.height}")
             logging.debug(f"  当前极点: {temp_extreme}")
             logging.debug(f"  当前放置数量: {len(temp_placements)}")
 
@@ -848,18 +837,11 @@ def pack_container_epp(groups: List[List['Cargo']], container: 'Container', allo
             if not temp_placements:
                 logging.info(f"空容器，尝试原点放置...")
                 for l, w, h, mode in cargo.orientations(container):
-                    # 根据模式确定实际尺寸
-                    if mode == 'L':
-                        actual_l, actual_w, actual_h = l, w, h
-                    elif mode == 'W':
-                        actual_l, actual_w, actual_h = w, l, h
-                    else:
-                        actual_l, actual_w, actual_h = l, w, h
 
                     # 检查边界
-                    if (actual_l <= container.length + 1e-9 and
-                            actual_w <= container.width + 1e-9 and
-                            actual_h <= container.height + 1e-9):
+                    if (l <= container.length + 1e-9 and
+                            w <= container.width + 1e-9 and
+                            h <= container.height + 1e-9):
 
                         if can_place_with_constraints((l, w, h), (0.0, 0.0, 0.0), temp_placements, container, cargo,
                                                       mode):
@@ -886,7 +868,7 @@ def pack_container_epp(groups: List[List['Cargo']], container: 'Container', allo
 
                 # 禁止在非空容器回退放到原点
                 if (x0, y0, z0) == (0.0, 0.0, 0.0) and temp_placements:
-                    logging.info("    跳过原点（非空容器）")
+                    logging.info("跳过原点（非空容器）")
                     continue
 
                 stacked = False
@@ -895,39 +877,69 @@ def pack_container_epp(groups: List[List['Cargo']], container: 'Container', allo
 
                 # 2.1) crate 优先堆叠
                 if is_crate and is_stackable and temp_placements:
-                    logging.info("    尝试堆叠放置...")
-                    for bx, by, bz, (bl, bw, bh), base_c, base_mode in temp_placements:
-                        if abs(x0 - bx) < 1e-3 and abs(y0 - by) < 1e-3 and abs(z0 - (bz + bh)) < 1e-3:
-                            if cargo.supplier != base_c.supplier:
-                                continue
-                            for l, w, h, mode in cargo.orientations(container):
-                                if abs(l - bl) < 1e-2 and abs(w - bw) < 1e-2:
-                                    if z0 + h < container.height and can_place_with_constraints((l, w, h),
-                                                                                                (x0, y0, z0),
-                                                                                                temp_placements,
-                                                                                                container,
-                                                                                                cargo,
-                                                                                                mode):
-                                        temp_placements.append((x0, y0, z0, (l, w, h), cargo, mode))
-                                        group_weight += cargo.gross_weight
-                                        group_volume += l * w * h
-                                        placed_flag = True
-                                        stacked = True
+                    logging.info("尝试堆叠放置...")
 
-                                        # 更新极点
-                                        updated_extreme = update_extreme_points(temp_extreme, (x0, y0, z0), (l, w, h),
-                                                                                temp_placements, container, mode)
-                                        temp_extreme = updated_extreme
-                                        logging.info(f"堆叠放置成功，新极点: {temp_extreme}")
-                                        break
-                            if stacked:
-                                break
+                    for bx, by, bz, (bl, bw, bh), base_c, base_mode in temp_placements:
+                        # 1. 检查基础货物也是Crate
+                        if base_c.package_type != 'Crate':
+                            continue
+
+                        # 2. 检查供应商是否相同
+                        if cargo.supplier != base_c.supplier:
+                            continue
+
+                        # 3. 检查原始尺寸是否完全相同（允许微小误差）
+                        if not (abs(cargo.length - base_c.length) < 1e-2 and
+                                abs(cargo.width - base_c.width) < 1e-2 and
+                                abs(cargo.height - base_c.height) < 1e-2):
+                            continue  # 原始尺寸不同，不能堆叠
+
+                        # 4. 计算堆叠点：在基础货物的正上方，坐标对齐 (bx, by, bz+bh)
+                        stack_x = bx
+                        stack_y = by
+                        stack_z = bz + bh
+
+                        # 5. 检查堆叠高度是否超出容器限制
+                        if stack_z + cargo.height > container.height + 1e-6:
+                            continue
+
+                        # 6. 尝试所有朝向，但优先使用与基础货物相同的朝向
+                        for l, w, h, mode in cargo.orientations(container):
+                            # 优先尝试与基础货物相同的朝向
+                            if mode != base_mode:
+                                continue
+
+                            # 检查尺寸是否匹配（旋转后尺寸应与基础货物相同）
+                            if not (abs(l - bl) < 1e-2 and abs(w - bw) < 1e-2):
+                                continue
+
+                            # 7. 检查是否可以放置（碰撞、支撑等规则）
+                            if can_place_with_constraints((l, w, h), (stack_x, stack_y, stack_z),
+                                                          temp_placements, container, cargo, mode):
+                                # 放置成功
+                                temp_placements.append((stack_x, stack_y, stack_z, (l, w, h), cargo, mode))
+                                group_weight += cargo.gross_weight
+                                group_volume += l * w * h
+                                placed_flag = True
+                                stacked = True
+
+                                # 更新极点 - 使用实际的堆叠点(stack_x, stack_y, stack_z)
+                                updated_extreme = update_extreme_points(temp_extreme, (stack_x, stack_y, stack_z),
+                                                                        (l, w, h), temp_placements, container, mode)
+                                temp_extreme = updated_extreme
+                                logging.info(
+                                    f"Crate堆叠成功! 基础在({bx},{by},{bz}), 堆叠在({stack_x},{stack_y},{stack_z})")
+                                break  # 跳出朝向循环
+
+                        if stacked:
+                            break  # 跳出基础货物循环
+
                     if stacked:
-                        break
+                        break  # 跳出极点循环，继续处理下一个货物
 
                 # 2.2) 普通平铺放置
                 if not placed_flag:
-                    logging.info("    尝试普通平铺放置...")
+                    logging.info("尝试普通平铺放置...")
                     for l, w, h, mode in cargo.orientations(container):
                         if can_place_with_constraints((l, w, h), (x0, y0, z0), temp_placements, container, cargo, mode):
                             temp_placements.append((x0, y0, z0, (l, w, h), cargo, mode))
@@ -1012,11 +1024,7 @@ def pack_container_epp(groups: List[List['Cargo']], container: 'Container', allo
 
 def plan_multi_containers(cargos: List[Cargo], container_types: List[Container]):
     """
-    修复版多容器装载调度 - 确保新创建的容器能被后续组使用
-    1. 组不允许拆分
-    2. 组合并不违反规则
-    3. 最大化容器利用率
-    4. 确保所有货物都有容器
+    多容器装载调度 - 确保新创建的容器能被后续组使用
     """
     expanded = expand_cargos_bulk(cargos)
     if not expanded:
@@ -1067,9 +1075,14 @@ def plan_multi_containers(cargos: List[Cargo], container_types: List[Container])
 
             # 首先尝试放入现有容器（按利用率从低到高排序）
             if instances:
-                instances.sort(key=lambda inst: inst['result']['utilization'])
+                # 过滤出可用的容器（未满载且类型匹配）
+                available_instances = [
+                    inst for inst in instances
+                    if inst['result']['ok'] and inst['result']['utilization'] < 0.95
+                ]
+                available_instances.sort(key=lambda instance: instance['result']['utilization'])
 
-                for inst_idx, inst in enumerate(instances):
+                for inst_idx, inst in enumerate(available_instances):
                     logging.info(f"  尝试放入容器 {inst_idx}: {inst['container'].name}, "
                                  f"利用率: {inst['result']['utilization'] * 100:.1f}%")
 
@@ -1107,6 +1120,8 @@ def plan_multi_containers(cargos: List[Cargo], container_types: List[Container])
                             logging.info(
                                 f"组成功放入现有容器 {inst['container'].name}, 利用率: {result['utilization'] * 100:.1f}%")
                             placed = True
+                            remaining_groups.pop(i)
+                            i = 0  # 重置索引，重新检查所有组
                             break
                         else:
                             logging.info(f"数据验证失败（新组未能全部放入），继续尝试其他容器")
@@ -1121,81 +1136,40 @@ def plan_multi_containers(cargos: List[Cargo], container_types: List[Container])
                 # 检查重量限制
                 total_weight = sum(c.gross_weight for c in group)
                 if total_weight > largest_container.max_weight:
-                    logging.info(f"警告: 组总重量 {total_weight} 超过容器最大载重 {largest_container.max_weight}")
+                    logging.warning(f"警告: 组总重量 {total_weight} 超过容器最大载重 {largest_container.max_weight}")
                     # 仍然创建容器但标记失败
+                    logging.info(f"组无法放置，跳过")
+                    i += 1
+                    continue
+
+                # 检查体积限制
+                total_volume = sum(c.volume() for c in group)
+                if total_volume > largest_container.volume():
+                    logging.warning(f"组总体积 {total_volume} 超过容器容积 {largest_container.volume()}")
+                    logging.info(f"组无法放置，跳过")
+                    i += 1
+                    continue
+
+                result = pack_container_epp(
+                    [copy.deepcopy(group)],
+                    largest_container,
+                    allow_partial=False
+                )
+
+                if result['ok']:
                     instances.append({
                         'container': largest_container,
                         'groups': [copy.deepcopy(group)],
-                        'result': {
-                            'placements': [],
-                            'utilization': 0,
-                            'weight': 0,
-                            'used_volume': 0,
-                            'packed_ids': [],
-                            'ok': False,
-                            'note': f'weight exceeded: {total_weight}/{largest_container.max_weight}'
-                        }
+                        'result': result
                     })
-                    placed = True
+                    logging.info(f"创建新容器放置组, 利用率: {result['utilization'] * 100:.1f}%")
+
+                    # 成功放置后，移除该组并重置索引
+                    remaining_groups.pop(i)
+                    i = 0  # 重置索引，重新检查所有组
                 else:
-                    # 检查体积限制
-                    total_volume = sum(c.volume() for c in group)
-                    if total_volume > largest_container.volume():
-                        logging.info(f"警告: 组总体积 {total_volume} 超过容器容积 {largest_container.volume()}")
-                        # 仍然创建容器但标记失败
-                        instances.append({
-                            'container': largest_container,
-                            'groups': [copy.deepcopy(group)],
-                            'result': {
-                                'placements': [],
-                                'utilization': 0,
-                                'weight': 0,
-                                'used_volume': 0,
-                                'packed_ids': [],
-                                'ok': False,
-                                'note': f'volume exceeded: {total_volume}/{largest_container.volume()}'
-                            }
-                        })
-                        placed = True
-                    else:
-                        # 尝试放置到新容器
-                        result = pack_container_epp(
-                            [copy.deepcopy(group)],
-                            largest_container,
-                            allow_partial=False
-                        )
-
-                        if result['ok']:
-                            instances.append({
-                                'container': largest_container,
-                                'groups': [copy.deepcopy(group)],
-                                'result': result
-                            })
-                            logging.info(f"创建新容器放置组, 利用率: {result['utilization'] * 100:.1f}%")
-                            placed = True
-                        else:
-                            # 如果算法无法放置，强制创建容器但标记失败
-                            instances.append({
-                                'container': largest_container,
-                                'groups': [copy.deepcopy(group)],
-                                'result': {
-                                    'placements': [],
-                                    'utilization': 0,
-                                    'weight': 0,
-                                    'used_volume': 0,
-                                    'packed_ids': [],
-                                    'ok': False,
-                                    'note': 'placement algorithm failed'
-                                }
-                            })
-                            logging.info(f"警告: 算法无法放置组，强制创建容器")
-                            placed = True
-
-            # 如果成功放置（无论是现有容器还是新容器），移除该组
-            if placed:
-                remaining_groups.pop(i)
-            else:
-                i += 1  # 移动到下一个组
+                    logging.warning(f"算法无法放置组到新容器")
+                    i += 1  # 移动到下一个组
 
         # 最终统计
         logging.info(f"\n最终结果: 使用 {len(instances)} 个容器")
@@ -1235,8 +1209,20 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
         if placed_ids != expected_ids:
             missing = expected_ids - placed_ids
             extra = placed_ids - expected_ids
+            # 增强警告信息，显示具体的缺失和多余货物
+            warning_msg = f"可视化警告: 数据不一致! 期望{len(expected_ids)}个，实际{len(placed_ids)}个"
+            if missing:
+                warning_msg += f", 缺失{len(missing)}个: {sorted(missing)}"
+            if extra:
+                warning_msg += f", 多余{len(extra)}个: {sorted(extra)}"
             logging.info(f"可视化警告: 数据不一致! 期望{len(expected_ids)}个，实际{len(placed_ids)}个")
-
+            # 可选：在图表标题中添加警告信息
+            title_suffix = " (数据不一致警告!)"
+        else:
+            title_suffix = ""
+            logging.info("数据验证通过: 所有货物都已正确放置")
+    else:
+        title_suffix = ""
     fig = go.Figure()
 
     # 深色背景配色方案
@@ -1420,16 +1406,15 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
         color = f'rgb({r},{g},{b})'
         border_color = 'rgba(0, 0, 0, 1)'  # 黑色边框
 
-        # 尺寸和方向处理
+        actual_l, actual_w, actual_h = l, w, h
+
+        # 确定进叉方向（与装载长度方向垂直）
         if mode == 'L':
-            actual_l, actual_w, actual_h = l, w, h
-            fork_direction = 'W'
+            fork_direction = 'W'  # 装载长度是L，进叉方向是W
         elif mode == 'W':
-            actual_l, actual_w, actual_h = w, l, h
-            fork_direction = 'L'
+            fork_direction = 'L'  # 装载长度是W，进叉方向是L
         else:
-            actual_l, actual_w, actual_h = l, w, h
-            fork_direction = 'W'
+            fork_direction = 'W'  # 默认
 
         # 货物立方体 - 使用正确的Mesh3d配置
         # 实心立方体的8个顶点
@@ -1460,12 +1445,13 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
             name=f"ID:{cargo.uid}",
             showlegend=False,
             # 启用hover
-            hovertemplate=f'<b>ID:{cargo.uid}</b><br>'
+            hovertemplate=f'<b>客户单号:{cargo.customer_order}</b><br>'
                           f'位置: (X:{center_x:.1f}, Y:{center_y:.1f}, Z:{center_z:.1f})<br>'
                           f'尺寸: {actual_l:.1f} × {actual_w:.1f} × {actual_h:.1f}<br>'
+                          f'装载长度类型：{mode}({cargo.load_dir})'
                           f'类型: {cargo.package_type}<br>'
                           f'供应商: {cargo.supplier}<br>'
-                          '<extra></extra>',
+                          f'<extra></extra>',
         )
         cargo_traces.append(cargo_trace)
         edges = [
@@ -1589,7 +1575,7 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
 
         ),
         title=dict(
-            text=f"📦 装载可视化 - {container.name}<br>"
+            text=f"📦 装载可视化 - {container.name}{title_suffix}<br>"
                  f"货物数量: {len(placements)} | 空间利用率: {res.get('utilization', 0) * 100:.1f}%",
             x=0.5,
             xanchor='center',
