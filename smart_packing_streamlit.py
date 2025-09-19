@@ -1442,6 +1442,9 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
         i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
         j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 1]
         k = [0, 7, 2, 3, 6, 7, 1, 5, 5, 5, 7, 6]
+        center_x = x + actual_l / 2
+        center_y = y + actual_w / 2
+        center_z = z + actual_h / 2
 
         # 创建实心货物 - 修复颜色配置
         cargo_trace = go.Mesh3d(
@@ -1456,21 +1459,13 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
             flatshading=True,  # 平面着色
             name=f"ID:{cargo.uid}",
             showlegend=False,
-            # 直接启用hover，不需要额外的透明层
-            hovertemplate='<b>ID:%{customdata[0]}</b><br>'
-                          '位置: (X:%{x:.1f}, Y:%{y:.1f}, Z:%{z:.1f})<br>'
-                          '尺寸: %{customdata[1]} × %{customdata[2]} × %{customdata[3]}<br>'
-                          '类型: %{customdata[4]}<br>'
-                          '供应商: %极customdata[5]}<br>'
+            # 启用hover
+            hovertemplate=f'<b>ID:{cargo.uid}</b><br>'
+                          f'位置: (X:{center_x:.1f}, Y:{center_y:.1f}, Z:{center_z:.1f})<br>'
+                          f'尺寸: {actual_l:.1f} × {actual_w:.1f} × {actual_h:.1f}<br>'
+                          f'类型: {cargo.package_type}<br>'
+                          f'供应商: {cargo.supplier}<br>'
                           '<extra></extra>',
-            customdata=[[
-                cargo.uid,
-                f"{actual_l:.1f}",
-                f"{actual_w:.1f}",
-                f"{actual_h:.1f}",
-                cargo.package_type,
-                cargo.supplier
-            ]] * 8
         )
         cargo_traces.append(cargo_trace)
         edges = [
@@ -1611,17 +1606,6 @@ def visualize_container_placements(res: Dict[str, Any], container: Container, gr
             borderwidth=1,
             font=dict(color='white')
         )
-    )
-
-    # 添加交互提示
-    fig.update_traces(
-        selector=dict(type='mesh3d'),  # 只对mesh3d类型的trace应用
-        hovertemplate='<b>%{customdata[0]}</b><br>'
-                      '位置: (X:%{x:.1f}, Y:%{y:.1f}, Z:%{z:.1f})<br>'
-                      '尺寸: %{customdata[1]} × %{customdata[2]} × %{customdata[3]}<br>'
-                      '类型: %{customdata[4]}<br>'
-                      '供应商: %{customdata[5]}<br>'
-                      '<extra></extra>'
     )
 
     return fig
